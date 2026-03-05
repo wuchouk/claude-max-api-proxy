@@ -104,6 +104,7 @@ async function handleStreamingResponse(
         // We accumulate streamed text to detect [User]/[Human] bleed patterns.
         // Once a bleed sentinel is detected, we stop forwarding further deltas.
         let accumulated = "";
+        let totalFlushed = 0;
         let bleedDetected = false;
         // Longest sentinel we watch for, so we know how much tail to hold back
         const BLEED_SENTINELS = ["\n[User]", "\n[Human]", "\nHuman:"];
@@ -146,11 +147,9 @@ async function handleStreamingResponse(
             // Check if the accumulated text contains a bleed sentinel
             const safe = stripAssistantBleed(accumulated);
             if (safe.length < accumulated.length) {
-                // Bleed found — write the safe portion and stop
+                // Bleed found — write only the unflushed safe portion and stop
                 bleedDetected = true;
-                // Only write the part we haven't written yet
-                const alreadyWritten = accumulated.length - incoming.length;
-                const safeNew = safe.slice(alreadyWritten);
+                const safeNew = safe.slice(totalFlushed);
                 if (safeNew) writeDelta(safeNew);
                 console.error("[Stream] Bleed detected — halting delta stream");
                 return;
@@ -159,10 +158,10 @@ async function handleStreamingResponse(
             // No bleed yet, but hold back the last MAX_SENTINEL_LEN chars as a
             // look-ahead buffer in case a sentinel straddles two delta chunks.
             const safeLen = Math.max(0, accumulated.length - MAX_SENTINEL_LEN);
-            const alreadyFlushed = accumulated.length - incoming.length;
-            const toFlush = safeLen - alreadyFlushed;
+            const toFlush = safeLen - totalFlushed;
             if (toFlush > 0) {
-                writeDelta(accumulated.slice(alreadyFlushed, alreadyFlushed + toFlush));
+                writeDelta(accumulated.slice(totalFlushed, totalFlushed + toFlush));
+                totalFlushed += toFlush;
             }
         }
 
@@ -172,11 +171,9 @@ async function handleStreamingResponse(
          */
         function flushTail(): void {
             if (bleedDetected || res.writableEnded) return;
-            const alreadyFlushed = Math.max(0, accumulated.length - MAX_SENTINEL_LEN);
-            const tail = accumulated.slice(alreadyFlushed);
-            if (!tail) return;
-            const safe = stripAssistantBleed(accumulated).slice(alreadyFlushed);
-            if (safe) writeDelta(safe);
+            const safe = stripAssistantBleed(accumulated);
+            const remaining = safe.slice(totalFlushed);
+            if (remaining) writeDelta(remaining);
         }
         // ──────────────────────────────────────────────────────────
 
